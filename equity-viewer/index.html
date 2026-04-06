@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Equity Viewer</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Pocket Option XLSX</p>
+        <h1>Equity Viewer</h1>
+        <p class="hero-text">
+          Загрузите Excel-отчет, пересчитайте мартингейл в браузере и подберите конфиг с
+          ограничением по максимальной просадке.
+        </p>
+        <a class="hero-link" href="https://t.me/ArhiKreol" target="_blank" rel="noopener noreferrer">
+          @ArhiKreol
+        </a>
+      </div>
+      <div class="hero-note">
+        <p>Логика работает целиком в браузере.</p>
+        <p>Файлы не отправляются на сервер и не сохраняются в IIS.</p>
+        <div class="visit-counter" aria-live="polite">
+          <div class="visit-counter-grid">
+            <div class="visit-counter-card">
+              <span class="visit-counter-label">Посетителей всего</span>
+              <strong id="visitCounterOverall">-</strong>
+            </div>
+            <div class="visit-counter-card">
+              <span class="visit-counter-label">Сегодня</span>
+              <strong id="visitCounterToday">-</strong>
+            </div>
+          </div>
+          <p class="visit-counter-note" id="visitCounterNote">Счетчик посетителей загружается...</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel control-panel">
+        <div class="section-heading">
+          <h2>Источник</h2>
+        </div>
+
+        <label class="upload-card" for="xlsxFile">
+          <span class="upload-title">Загрузить отчет</span>
+          <span class="upload-text">Выберите `.xlsx` файл Pocket Option.</span>
+          <span class="upload-button">Выбрать файл</span>
+        </label>
+        <input id="xlsxFile" class="visually-hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+
+        <div class="source-meta" id="sourceMeta">
+          <div>
+            <span class="meta-label">Файл</span>
+            <strong id="sourceFileName">Файл не загружен</strong>
+          </div>
+          <div>
+            <span class="meta-label">Сделок в sequence</span>
+            <strong id="sourceTradeCount">0</strong>
+          </div>
+          <div>
+            <span class="meta-label">Строк в файле</span>
+            <strong id="sourceRowCount">0</strong>
+          </div>
+        </div>
+
+        <div class="section-heading compact">
+          <h2>Параметры</h2>
+        </div>
+
+        <div class="control-block">
+          <div class="control-row">
+            <label for="resetAfterLosses">Сброс после минусов</label>
+            <output id="resetAfterLossesValue">3</output>
+          </div>
+          <input id="resetAfterLosses" type="range" min="2" max="10" step="1" value="3">
+        </div>
+
+        <div class="control-block">
+          <div class="control-row">
+            <label for="lossMult">Множитель мартингейла</label>
+            <output id="lossMultValue">3.0x</output>
+          </div>
+          <input id="lossMult" type="range" min="1" max="10" step="0.1" value="3.0">
+        </div>
+
+        <div class="auto-grid">
+          <label class="text-field">
+            <span>Лимит максимальной просадки</span>
+            <input id="maxDrawdownCap" type="text" inputmode="decimal" value="100" placeholder="Например, 100">
+          </label>
+          <button id="autoBestButton" class="action-button" type="button">Auto best P/DD</button>
+        </div>
+
+        <p id="statusBanner" class="status-banner neutral">
+          Загрузите `.xlsx`, чтобы построить equity и статистику.
+        </p>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="chart-header">
+          <div>
+            <p class="chart-kicker">Equity Curve</p>
+            <h2 id="chartTitle">График недоступен</h2>
+          </div>
+          <div class="chart-summary" id="chartSummary">Нет данных для расчета.</div>
+        </div>
+        <div class="chart-surface">
+          <canvas id="equityChart" aria-label="Equity chart"></canvas>
+          <div id="chartEmptyState" class="chart-empty">
+            Загрузите файл, чтобы увидеть линию equity.
+          </div>
+        </div>
+        <div class="chart-break-panel">
+          <div class="chart-break-hints" aria-hidden="true">
+            <span class="chart-break-hint">Сломать плюс</span>
+            <span class="chart-break-hint">Правок</span>
+            <span class="chart-break-hint">Отменить</span>
+          </div>
+          <div class="chart-break-controls" aria-label="Ручные правки мартингейла">
+            <button id="manualBreakApplyButton" class="chart-break-button" type="button" aria-label="Перевести одну завершающую плюсовую сделку в минус" title="Случайно переводит одну подходящую завершающую плюсовую сделку в минус." data-tooltip="Случайно переводит одну подходящую завершающую плюсовую сделку в минус.">&lt;</button>
+            <output id="manualBreakCount" class="chart-break-count" for="manualBreakApplyButton manualBreakUndoButton">0</output>
+            <button id="manualBreakUndoButton" class="chart-break-button" type="button" aria-label="Вернуть назад последнюю ручную правку" title="Отменяет последнюю ручную правку и возвращает сделку обратно в плюс." data-tooltip="Отменяет последнюю ручную правку и возвращает сделку обратно в плюс.">&gt;</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel stats-panel">
+        <div class="section-heading">
+          <h2>Статистика</h2>
+          <p>Значения пересчитываются после загрузки файла и движения ползунков.</p>
+        </div>
+        <dl class="stats-grid" id="statsGrid"></dl>
+      </aside>
+    </main>
+  </div>
+
+  <script src="./vendor/xlsx.full.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
