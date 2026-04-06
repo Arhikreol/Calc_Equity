@@ -352,6 +352,51 @@ input[type="range"] {
   accent-color: var(--primary);
 }
 
+.step-mult-panel {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.step-mult-heading {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.step-mult-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 10px;
+}
+
+.step-mult-item {
+  display: grid;
+  gap: 6px;
+}
+
+.step-mult-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+}
+
+.step-mult-input {
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(101, 76, 44, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 252, 246, 0.9);
+  color: var(--text);
+  font: inherit;
+}
+
+.step-mult-input:focus-visible {
+  outline: 2px solid rgba(15, 111, 99, 0.25);
+  outline-offset: 1px;
+}
+
 .auto-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

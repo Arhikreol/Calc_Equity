@@ -19,6 +19,7 @@
     resetAfterLossesValue: document.getElementById("resetAfterLossesValue"),
     lossMult: document.getElementById("lossMult"),
     lossMultValue: document.getElementById("lossMultValue"),
+    lossMultSequenceFields: document.getElementById("lossMultSequenceFields"),
     maxDrawdownCap: document.getElementById("maxDrawdownCap"),
     autoBestButton: document.getElementById("autoBestButton"),
     statusBanner: document.getElementById("statusBanner"),
@@ -69,6 +70,8 @@
 
     dom.resetAfterLosses.addEventListener("input", handleControlChange);
     dom.lossMult.addEventListener("input", handleControlChange);
+    dom.lossMultSequenceFields.addEventListener("input", handleLossMultSequenceInput);
+    dom.lossMultSequenceFields.addEventListener("change", handleLossMultSequenceCommit);
     dom.fileInput.addEventListener("change", handleFileSelect);
     dom.autoBestButton.addEventListener("click", handleAutoBestClick);
     dom.manualBreakApplyButton.addEventListener("click", handleManualBreakApplyClick);
@@ -79,6 +82,7 @@
     }
 
     syncControlLabels();
+    renderLossMultSequenceFields();
     renderState();
     setBusy(false);
     loadVisitCounter();
@@ -127,18 +131,92 @@
     return values;
   }
 
+  function buildLossMultSequence(resetAfterLosses, lossMult) {
+    const normalizedReset = normalizeResetAfterLosses(resetAfterLosses);
+    const normalizedLossMult = normalizeLossMult(lossMult);
+    const values = [];
+    for (let index = 0; index < normalizedReset; index += 1) {
+      values.push(Number(Math.pow(normalizedLossMult, index).toFixed(6)));
+    }
+    return values;
+  }
+
+  function normalizeStepMultiplierValue(value, fallbackValue) {
+    if (typeof value === "string" && !value.trim()) {
+      return 1.0;
+    }
+    const parsed = parseNumericCell(value);
+    if (parsed === null || parsed <= 0) {
+      return Number((fallbackValue || 1.0).toFixed(6));
+    }
+    return Number(parsed.toFixed(6));
+  }
+
+  function normalizeLossMultSequence(values, resetAfterLosses, lossMult) {
+    const normalizedReset = normalizeResetAfterLosses(resetAfterLosses);
+    const defaults = buildLossMultSequence(normalizedReset, lossMult);
+    const nextValues = [];
+
+    for (let index = 0; index < normalizedReset; index += 1) {
+      nextValues.push(
+        normalizeStepMultiplierValue(
+          Array.isArray(values) ? values[index] : null,
+          defaults[index]
+        )
+      );
+    }
+
+    return nextValues;
+  }
+
+  function resizeLossMultSequence(values, resetAfterLosses, lossMult) {
+    return normalizeLossMultSequence(values, resetAfterLosses, lossMult);
+  }
+
+  function formatStepMultiplier(value) {
+    const numeric = normalizeStepMultiplierValue(value, 1.0);
+    return formatFixed(numeric, 2).replace(".", ",");
+  }
+
   function buildConfig(resetAfterLosses, lossMult) {
     return {
       baseStake: DEFAULT_BASE_STAKE,
       payoutPct: DEFAULT_PAYOUT_PCT,
       resetAfterLosses: normalizeResetAfterLosses(resetAfterLosses),
       lossMult: normalizeLossMult(lossMult),
+      lossMultSequence: buildLossMultSequence(
+        normalizeResetAfterLosses(resetAfterLosses),
+        normalizeLossMult(lossMult)
+      ),
     };
   }
 
   function handleControlChange() {
-    state.config = buildConfig(dom.resetAfterLosses.value, dom.lossMult.value);
+    const nextReset = normalizeResetAfterLosses(dom.resetAfterLosses.value);
+    const nextLossMult = normalizeLossMult(dom.lossMult.value);
+    const resetChanged = nextReset !== state.config.resetAfterLosses;
+    const lossMultChanged = nextLossMult !== state.config.lossMult;
+    const nextConfig = buildConfig(nextReset, nextLossMult);
+
+    if (lossMultChanged) {
+      nextConfig.lossMultSequence = buildLossMultSequence(nextReset, nextLossMult);
+    } else if (resetChanged) {
+      nextConfig.lossMultSequence = resizeLossMultSequence(
+        state.config.lossMultSequence,
+        nextReset,
+        nextLossMult
+      );
+    } else {
+      nextConfig.lossMultSequence = normalizeLossMultSequence(
+        state.config.lossMultSequence,
+        nextReset,
+        nextLossMult
+      );
+    }
+
+    state.config = nextConfig;
     syncControlLabels();
+    renderLossMultSequenceFields();
     if (!state.sequence.length) {
       renderState();
       return;
@@ -464,14 +542,19 @@
 
   function simulateRuntimeGroupTrace(values, config) {
     const payoutFraction = config.payoutPct / 100.0;
+    const stepMultipliers = normalizeLossMultSequence(
+      config.lossMultSequence,
+      config.resetAfterLosses,
+      config.lossMult
+    );
     const trace = [];
     let equity = 0.0;
     let lossStreak = 0;
-    let nextStake = config.baseStake;
 
     for (let index = 0; index < values.length; index += 1) {
       const outcome = values[index];
-      const stake = nextStake;
+      const stepIndex = Math.min(lossStreak, stepMultipliers.length - 1);
+      const stake = config.baseStake * stepMultipliers[stepIndex];
 
       trace.push({
         index: index + 1,
@@ -484,15 +567,11 @@
       if (outcome > 0) {
         equity += stake * payoutFraction;
         lossStreak = 0;
-        nextStake = config.baseStake;
       } else {
         equity -= stake;
         lossStreak += 1;
         if (lossStreak >= config.resetAfterLosses) {
           lossStreak = 0;
-          nextStake = config.baseStake;
-        } else {
-          nextStake = stake * config.lossMult;
         }
       }
 
@@ -911,11 +990,81 @@
     dom.resetAfterLosses.value = String(state.config.resetAfterLosses);
     dom.lossMult.value = String(state.config.lossMult);
     syncControlLabels();
+    renderLossMultSequenceFields();
   }
 
   function syncControlLabels() {
     dom.resetAfterLossesValue.textContent = String(normalizeResetAfterLosses(dom.resetAfterLosses.value));
     dom.lossMultValue.textContent = formatFixed(normalizeLossMult(dom.lossMult.value), 1) + "x";
+  }
+
+  function renderLossMultSequenceFields() {
+    const sequence = normalizeLossMultSequence(
+      state.config.lossMultSequence,
+      state.config.resetAfterLosses,
+      state.config.lossMult
+    );
+
+    dom.lossMultSequenceFields.innerHTML = sequence.map(function (value, index) {
+      const disabledAttr = state.busy ? " disabled" : "";
+      return (
+        '<label class="step-mult-item">' +
+        '<span class="step-mult-label">Шаг ' + escapeHtml(String(index + 1)) + "</span>" +
+        '<input class="step-mult-input" type="text" inputmode="decimal" data-step-index="' + escapeHtml(String(index)) + '" value="' + escapeHtml(formatStepMultiplier(value)) + '"' + disabledAttr + ">" +
+        "</label>"
+      );
+    }).join("");
+  }
+
+  function handleLossMultSequenceInput(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || !target.hasAttribute("data-step-index")) {
+      return;
+    }
+
+    const index = Number(target.getAttribute("data-step-index"));
+    if (!Number.isInteger(index) || index < 0) {
+      return;
+    }
+
+    const nextSequence = state.config.lossMultSequence.slice();
+    const fallbackValue = nextSequence[index];
+    nextSequence[index] = normalizeStepMultiplierValue(target.value, fallbackValue);
+    state.config.lossMultSequence = normalizeLossMultSequence(
+      nextSequence,
+      state.config.resetAfterLosses,
+      state.config.lossMult
+    );
+
+    if (!state.sequence.length) {
+      return;
+    }
+
+    recomputePayload();
+    renderState();
+  }
+
+  function handleLossMultSequenceCommit(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || !target.hasAttribute("data-step-index")) {
+      return;
+    }
+
+    const index = Number(target.getAttribute("data-step-index"));
+    if (!Number.isInteger(index) || index < 0) {
+      return;
+    }
+
+    const committedValue = normalizeStepMultiplierValue(target.value, state.config.lossMultSequence[index]);
+    state.config.lossMultSequence[index] = committedValue;
+    target.value = formatStepMultiplier(committedValue);
+
+    if (!state.sequence.length) {
+      return;
+    }
+
+    recomputePayload();
+    renderState();
   }
 
   function renderState() {
@@ -1288,6 +1437,7 @@
     dom.fileInput.disabled = state.busy;
     dom.resetAfterLosses.disabled = state.busy;
     dom.lossMult.disabled = state.busy;
+    renderLossMultSequenceFields();
     renderManualBreakControls();
   }
 
@@ -1409,6 +1559,9 @@
       assertEqual(normalizeResetAfterLosses(4.0), 4, "normalize reset");
       assertAlmostEqual(normalizeLossMult(3.06), 3.1, "normalize mult");
       assertArrayApproxEqual(buildLossMultCandidates().slice(0, 3), [1.0, 1.1, 1.2], "mult candidates");
+      assertArrayApproxEqual(buildLossMultSequence(4, 2.0), [1.0, 2.0, 4.0, 8.0], "step mult sequence");
+      assertAlmostEqual(normalizeStepMultiplierValue("", 5), 1.0, "empty step mult");
+      assertAlmostEqual(normalizeStepMultiplierValue("2,5", 1), 2.5, "comma step mult");
       assertEqual(parseMaxDrawdownLimit(""), null, "empty max dd");
       assertAlmostEqual(parseMaxDrawdownLimit("96,5"), 96.5, "decimal max dd");
 
@@ -1452,6 +1605,10 @@
       const statsSummary = summarizeSequence([1, -1, 1, -1]);
       const statsPayload = buildPlotPayload([1, -1, 1, -1], config, statsSummary);
       assertAlmostEqual(statsPayload.metrics.finalPnlNormalized, 1.68, "stats pnl");
+      const customConfig = buildConfig(4, 2.0);
+      customConfig.lossMultSequence = [1.0, 1.5, 3.0, 10.0];
+      const customPayload = buildPlotPayload([-1, -1, -1, 1], customConfig, summarizeSequence([-1, -1, -1, 1]));
+      assertArrayApproxEqual(customPayload.equityValues, [0.0, -1.0, -2.5, -5.5, 3.7], "custom step mult payload");
 
       assertArrayEqual(
         collectEligibleBreakCandidateIndices([-1, -1, 1, 1, -1, -1, 1], 3),
