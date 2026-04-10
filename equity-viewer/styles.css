@@ -107,7 +107,7 @@ body::before {
 .hero-text,
 .hero-note p,
 .section-heading p,
-.chart-summary {
+.chart-summary-empty {
   margin: 0;
   line-height: 1.55;
   color: var(--muted);
@@ -424,6 +424,13 @@ input[type="range"] {
   outline-offset: 1px;
 }
 
+.control-hint {
+  margin: 10px 0 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 .status-banner {
   margin: 18px 0 0;
   padding: 14px 16px;
@@ -455,12 +462,53 @@ input[type="range"] {
 }
 
 .chart-header {
-  display: none;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .chart-summary {
-  max-width: 260px;
-  text-align: right;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.chart-summary-card {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(101, 76, 44, 0.12);
+  background: rgba(255, 250, 240, 0.82);
+}
+
+.chart-summary-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(15, 111, 99, 0.12);
+  color: var(--primary-deep);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.chart-summary-card.kelly .chart-summary-label {
+  background: rgba(41, 95, 183, 0.12);
+  color: #295fb7;
+}
+
+.chart-summary-item {
+  font-size: 0.92rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .chart-surface {
@@ -740,15 +788,6 @@ input[type="range"] {
 
   .chart-panel {
     min-height: auto;
-  }
-
-  .chart-header {
-    flex-direction: column;
-  }
-
-  .chart-summary {
-    max-width: none;
-    text-align: left;
   }
 
   .stats-panel {

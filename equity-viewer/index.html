@@ -99,6 +99,27 @@
           <button id="autoBestButton" class="action-button" type="button">Auto best P/DD</button>
         </div>
 
+        <div class="section-heading compact">
+          <h2>Kelly</h2>
+          <p>Ставка считается как доля от текущего депозита, но не меньше 1 USD.</p>
+        </div>
+
+        <div class="control-block">
+          <label class="text-field">
+            <span>Стартовый депозит</span>
+            <input id="kellyStartDeposit" type="text" inputmode="decimal" value="100" placeholder="Например, 100">
+          </label>
+        </div>
+
+        <div class="control-block">
+          <div class="control-row">
+            <label for="kellyPositionPct">Размер позиции</label>
+            <output id="kellyPositionPctValue">2.0%</output>
+          </div>
+          <input id="kellyPositionPct" type="range" min="0.1" max="10" step="0.1" value="2.0">
+          <p class="control-hint">Ставка на сделку = выбранный процент от текущего депозита, но не меньше 1 USD.</p>
+        </div>
+
         <p id="statusBanner" class="status-banner neutral">
           Загрузите `.xlsx`, чтобы построить equity и статистику.
         </p>
@@ -124,10 +145,10 @@
             <span class="chart-break-hint">Правок</span>
             <span class="chart-break-hint">Отменить</span>
           </div>
-          <div class="chart-break-controls" aria-label="Ручные правки мартингейла">
-            <button id="manualBreakApplyButton" class="chart-break-button" type="button" aria-label="Перевести одну завершающую плюсовую сделку в минус" title="Случайно переводит одну подходящую завершающую плюсовую сделку в минус." data-tooltip="Случайно переводит одну подходящую завершающую плюсовую сделку в минус.">&lt;</button>
+          <div class="chart-break-controls" aria-label="Ручные правки сценария">
+            <button id="manualBreakApplyButton" class="chart-break-button" type="button" aria-label="Перевести одну завершающую плюсовую сделку в минус" title="Случайно переводит одну подходящую завершающую плюсовую сделку в минус для стресс-теста." data-tooltip="Случайно переводит одну подходящую завершающую плюсовую сделку в минус для стресс-теста мартингейла и Kelly.">&lt;</button>
             <output id="manualBreakCount" class="chart-break-count" for="manualBreakApplyButton manualBreakUndoButton">0</output>
-            <button id="manualBreakUndoButton" class="chart-break-button" type="button" aria-label="Вернуть назад последнюю ручную правку" title="Отменяет последнюю ручную правку и возвращает сделку обратно в плюс." data-tooltip="Отменяет последнюю ручную правку и возвращает сделку обратно в плюс.">&gt;</button>
+            <button id="manualBreakUndoButton" class="chart-break-button" type="button" aria-label="Вернуть назад последнюю ручную правку" title="Отменяет последнюю ручную правку и возвращает сделку обратно в плюс." data-tooltip="Отменяет последнюю ручную правку и пересчитывает обе расчетные кривые.">&gt;</button>
           </div>
         </div>
       </section>

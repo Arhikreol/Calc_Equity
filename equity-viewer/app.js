@@ -6,11 +6,17 @@
   const DEFAULT_RESET_AFTER_LOSSES = 3;
   const DEFAULT_LOSS_MULT = 3.0;
   const DEFAULT_MAX_DRAWDOWN_CAP = 100.0;
+  const DEFAULT_KELLY_START_DEPOSIT = 100.0;
+  const DEFAULT_KELLY_POSITION_PCT = 2.0;
   const RESET_AFTER_LOSSES_MIN = 2;
   const RESET_AFTER_LOSSES_MAX = 10;
   const LOSS_MULT_MIN = 1.0;
   const LOSS_MULT_MAX = 10.0;
   const LOSS_MULT_STEP = 0.1;
+  const KELLY_MIN_STAKE = 1.0;
+  const KELLY_START_DEPOSIT_MIN = 1.0;
+  const KELLY_POSITION_PCT_MIN = 0.1;
+  const KELLY_POSITION_PCT_MAX = 10.0;
   const EPSILON = 1e-9;
 
   const dom = {
@@ -21,6 +27,9 @@
     lossMultValue: document.getElementById("lossMultValue"),
     lossMultSequenceFields: document.getElementById("lossMultSequenceFields"),
     maxDrawdownCap: document.getElementById("maxDrawdownCap"),
+    kellyStartDeposit: document.getElementById("kellyStartDeposit"),
+    kellyPositionPct: document.getElementById("kellyPositionPct"),
+    kellyPositionPctValue: document.getElementById("kellyPositionPctValue"),
     autoBestButton: document.getElementById("autoBestButton"),
     statusBanner: document.getElementById("statusBanner"),
     chartTitle: document.getElementById("chartTitle"),
@@ -51,6 +60,7 @@
     sequence: [],
     sequenceSummary: emptySequenceSummary(),
     config: buildConfig(DEFAULT_RESET_AFTER_LOSSES, DEFAULT_LOSS_MULT),
+    kellyConfig: buildKellyConfig(DEFAULT_KELLY_START_DEPOSIT, DEFAULT_KELLY_POSITION_PCT),
     actualCurve: null,
     actualFitEquityValues: null,
     effectiveSequence: [],
@@ -58,6 +68,7 @@
     manualBreakCandidateIndices: [],
     baselinePayload: null,
     payload: null,
+    kellyPayload: null,
   };
   let pendingChartFrame = 0;
 
@@ -72,6 +83,9 @@
     dom.lossMult.addEventListener("input", handleControlChange);
     dom.lossMultSequenceFields.addEventListener("input", handleLossMultSequenceInput);
     dom.lossMultSequenceFields.addEventListener("change", handleLossMultSequenceCommit);
+    dom.kellyStartDeposit.addEventListener("input", handleKellyDepositInput);
+    dom.kellyStartDeposit.addEventListener("change", handleKellyDepositCommit);
+    dom.kellyPositionPct.addEventListener("input", handleKellyPositionChange);
     dom.fileInput.addEventListener("change", handleFileSelect);
     dom.autoBestButton.addEventListener("click", handleAutoBestClick);
     dom.manualBreakApplyButton.addEventListener("click", handleManualBreakApplyClick);
@@ -79,6 +93,12 @@
 
     if (!String(dom.maxDrawdownCap.value || "").trim()) {
       dom.maxDrawdownCap.value = formatFixed(DEFAULT_MAX_DRAWDOWN_CAP, 0);
+    }
+    if (!String(dom.kellyStartDeposit.value || "").trim()) {
+      dom.kellyStartDeposit.value = formatTrimmedNumber(DEFAULT_KELLY_START_DEPOSIT, 2);
+    }
+    if (!String(dom.kellyPositionPct.value || "").trim()) {
+      dom.kellyPositionPct.value = formatFixed(DEFAULT_KELLY_POSITION_PCT, 1);
     }
 
     syncControlLabels();
@@ -191,6 +211,32 @@
     };
   }
 
+  function normalizeKellyStartDeposit(value) {
+    const parsed = parseNumericCell(value);
+    const numeric = parsed === null ? DEFAULT_KELLY_START_DEPOSIT : parsed;
+    return Number(Math.max(KELLY_START_DEPOSIT_MIN, numeric).toFixed(2));
+  }
+
+  function normalizeKellyPositionPct(value) {
+    const numeric = Number(value);
+    const bounded = Math.min(
+      KELLY_POSITION_PCT_MAX,
+      Math.max(
+        KELLY_POSITION_PCT_MIN,
+        Number.isFinite(numeric) ? numeric : DEFAULT_KELLY_POSITION_PCT
+      )
+    );
+    return Number((Math.round((bounded + EPSILON) * 10) / 10).toFixed(1));
+  }
+
+  function buildKellyConfig(startDeposit, positionPct) {
+    return {
+      startDeposit: normalizeKellyStartDeposit(startDeposit),
+      positionPct: normalizeKellyPositionPct(positionPct),
+      payoutPct: DEFAULT_PAYOUT_PCT,
+    };
+  }
+
   function handleControlChange() {
     const nextReset = normalizeResetAfterLosses(dom.resetAfterLosses.value);
     const nextLossMult = normalizeLossMult(dom.lossMult.value);
@@ -221,6 +267,58 @@
       renderState();
       return;
     }
+    recomputePayload();
+    renderState();
+  }
+
+  function handleKellyDepositInput(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+
+    const parsed = parseNumericCell(target.value);
+    if (parsed === null || parsed < KELLY_START_DEPOSIT_MIN) {
+      return;
+    }
+
+    state.kellyConfig = buildKellyConfig(parsed, state.kellyConfig.positionPct);
+    if (!state.sequence.length) {
+      return;
+    }
+
+    recomputePayload();
+    renderState();
+  }
+
+  function handleKellyDepositCommit(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+
+    state.kellyConfig = buildKellyConfig(target.value, state.kellyConfig.positionPct);
+    target.value = formatTrimmedNumber(state.kellyConfig.startDeposit, 2);
+
+    if (!state.sequence.length) {
+      return;
+    }
+
+    recomputePayload();
+    renderState();
+  }
+
+  function handleKellyPositionChange() {
+    state.kellyConfig = buildKellyConfig(
+      state.kellyConfig.startDeposit,
+      dom.kellyPositionPct.value
+    );
+    syncControlLabels();
+
+    if (!state.sequence.length) {
+      return;
+    }
+
     recomputePayload();
     renderState();
   }
@@ -333,6 +431,7 @@
     state.manualBreakCandidateIndices = [];
     state.baselinePayload = null;
     state.payload = null;
+    state.kellyPayload = null;
   }
 
   function resetManualBreaks() {
@@ -642,6 +741,98 @@
     };
   }
 
+  function simulateKellyTrace(values, kellyConfig) {
+    const payoutFraction = kellyConfig.payoutPct / 100.0;
+    const trace = [];
+    let balance = kellyConfig.startDeposit;
+
+    for (let index = 0; index < values.length; index += 1) {
+      const outcome = values[index];
+      const rawStake = balance * (kellyConfig.positionPct / 100.0);
+      const stake = balance + EPSILON >= KELLY_MIN_STAKE
+        ? Math.min(balance, Math.max(KELLY_MIN_STAKE, rawStake))
+        : 0.0;
+
+      trace.push({
+        index: index + 1,
+        stake: stake,
+        outcome: outcome,
+        balanceBefore: balance,
+        balance: null,
+        equity: null,
+      });
+
+      if (outcome > 0) {
+        balance += stake * payoutFraction;
+      } else {
+        balance -= stake;
+      }
+
+      if (balance < 0) {
+        balance = 0.0;
+      }
+
+      trace[trace.length - 1].balance = balance;
+      trace[trace.length - 1].equity = balance - kellyConfig.startDeposit;
+    }
+
+    return trace;
+  }
+
+  function summarizeKellyTrace(trace, kellyConfig) {
+    let finalBalance = kellyConfig.startDeposit;
+    let peakBalance = kellyConfig.startDeposit;
+    let maxDrawdownNormalized = 0.0;
+    let peakStakeNormalized = 0.0;
+
+    for (let index = 0; index < trace.length; index += 1) {
+      const point = trace[index];
+      finalBalance = point.balance;
+      if (point.stake > peakStakeNormalized) {
+        peakStakeNormalized = point.stake;
+      }
+      if (point.balance > peakBalance) {
+        peakBalance = point.balance;
+      }
+      const drawdown = peakBalance - point.balance;
+      if (drawdown > maxDrawdownNormalized) {
+        maxDrawdownNormalized = drawdown;
+      }
+    }
+
+    const finalPnlNormalized = finalBalance - kellyConfig.startDeposit;
+    return {
+      finalPnlNormalized: finalPnlNormalized,
+      maxDrawdownNormalized: maxDrawdownNormalized,
+      peakStakeNormalized: peakStakeNormalized,
+      recoveryFactor: computeProfitDrawdownRatio(finalPnlNormalized, maxDrawdownNormalized),
+      finalBalance: finalBalance,
+      startBalance: kellyConfig.startDeposit,
+    };
+  }
+
+  function buildKellyPayload(values, kellyConfig, sequenceSummary) {
+    const trace = simulateKellyTrace(values, kellyConfig);
+    const metrics = summarizeKellyTrace(trace, kellyConfig);
+    const tradeIndices = [0];
+    const equityValues = [0.0];
+    const balanceValues = [kellyConfig.startDeposit];
+
+    for (let index = 0; index < trace.length; index += 1) {
+      tradeIndices.push(trace[index].index);
+      equityValues.push(trace[index].equity);
+      balanceValues.push(trace[index].balance);
+    }
+
+    return {
+      tradeIndices: tradeIndices,
+      equityValues: equityValues,
+      balanceValues: balanceValues,
+      metrics: metrics,
+      sequenceSummary: sequenceSummary,
+    };
+  }
+
   function buildCumulativeEquityCurveFromProfits(profits) {
     const tradeIndices = [0];
     const equityValues = [0.0];
@@ -926,7 +1117,7 @@
     renderState();
 
     if (state.manualBreakCandidateIndices.length) {
-      setStatus("Сделка #" + String(targetIndex + 1) + " переведена в минус.", "success");
+      setStatus("Сделка #" + String(targetIndex + 1) + " переведена в минус для сценарного теста.", "success");
       return;
     }
 
@@ -966,6 +1157,7 @@
       state.manualBreakCandidateIndices = [];
       state.baselinePayload = null;
       state.payload = null;
+      state.kellyPayload = null;
       return;
     }
 
@@ -984,11 +1176,18 @@
       state.config,
       summarizeSequence(state.effectiveSequence)
     );
+    state.kellyPayload = buildKellyPayload(
+      state.effectiveSequence,
+      state.kellyConfig,
+      summarizeSequence(state.effectiveSequence)
+    );
   }
 
   function syncControlsFromState() {
     dom.resetAfterLosses.value = String(state.config.resetAfterLosses);
     dom.lossMult.value = String(state.config.lossMult);
+    dom.kellyStartDeposit.value = formatTrimmedNumber(state.kellyConfig.startDeposit, 2);
+    dom.kellyPositionPct.value = String(state.kellyConfig.positionPct);
     syncControlLabels();
     renderLossMultSequenceFields();
   }
@@ -996,6 +1195,7 @@
   function syncControlLabels() {
     dom.resetAfterLossesValue.textContent = String(normalizeResetAfterLosses(dom.resetAfterLosses.value));
     dom.lossMultValue.textContent = formatFixed(normalizeLossMult(dom.lossMult.value), 1) + "x";
+    dom.kellyPositionPctValue.textContent = formatFixed(normalizeKellyPositionPct(dom.kellyPositionPct.value), 1) + "%";
   }
 
   function renderLossMultSequenceFields() {
@@ -1431,12 +1631,247 @@
     context.restore();
   }
 
+  function buildStatsRows() {
+    if (!state.payload || !state.kellyPayload) {
+      return [
+        { label: "Martingale Ratio", value: "-", hint: "Отношение итоговой прибыли мартингейла к его максимальной просадке." },
+        { label: "Martingale PnL", value: "-", hint: "Итоговый результат мартингейл-кривой." },
+        { label: "Martingale Max DD", value: "-", hint: "Максимальная просадка мартингейл-кривой." },
+        { label: "Martingale Peak Stake", value: "-", hint: "Максимальная ставка, до которой доходил мартингейл." },
+        { label: "Kelly Ratio", value: "-", hint: "Отношение итоговой прибыли Kelly-кривой к ее максимальной просадке." },
+        { label: "Kelly PnL", value: "-", hint: "Итоговый результат Kelly-кривой относительно стартового депозита." },
+        { label: "Kelly Max DD", value: "-", hint: "Максимальная просадка Kelly-кривой в долларах." },
+        { label: "Kelly Peak Position", value: "-", hint: "Максимальный размер позиции в долларах при выбранном проценте от депозита." },
+        { label: "Сделок", value: "0" },
+        { label: "Плюсовых", value: "0" },
+        { label: "Минусовых", value: "0" },
+        { label: "Winrate", value: "0.00%" },
+        { label: "Max loss streak", value: "0" },
+      ];
+    }
+
+    const summary = state.payload.sequenceSummary;
+    const martingaleMetrics = state.payload.metrics;
+    const kellyMetrics = state.kellyPayload.metrics;
+    const winRate = summary.tradeCount > 0 ? (summary.winCount * 100.0) / summary.tradeCount : 0.0;
+
+    return [
+      {
+        label: "Martingale Ratio",
+        value: formatRatio(martingaleMetrics.recoveryFactor),
+        hint: "Отношение итоговой прибыли мартингейла к его максимальной просадке.",
+      },
+      {
+        label: "Martingale PnL",
+        value: formatMoney(martingaleMetrics.finalPnlNormalized),
+        hint: "Итоговый результат мартингейл-кривой после всех сделок.",
+      },
+      {
+        label: "Martingale Max DD",
+        value: formatMoney(martingaleMetrics.maxDrawdownNormalized),
+        hint: "Максимальная просадка мартингейл-кривой от локального пика.",
+      },
+      {
+        label: "Martingale Peak Stake",
+        value: formatMoney(martingaleMetrics.peakStakeNormalized),
+        hint: "Самая большая ставка, до которой доходил мартингейл.",
+      },
+      {
+        label: "Kelly Ratio",
+        value: formatRatio(kellyMetrics.recoveryFactor),
+        hint: "Отношение итоговой прибыли Kelly-кривой к ее максимальной просадке.",
+      },
+      {
+        label: "Kelly PnL",
+        value: formatMoney(kellyMetrics.finalPnlNormalized),
+        hint: "Итоговый результат Kelly-кривой относительно стартового депозита.",
+      },
+      {
+        label: "Kelly Max DD",
+        value: formatMoney(kellyMetrics.maxDrawdownNormalized),
+        hint: "Максимальная просадка Kelly-кривой в долларах.",
+      },
+      {
+        label: "Kelly Peak Position",
+        value: formatMoney(kellyMetrics.peakStakeNormalized),
+        hint: "Максимальный размер позиции в долларах при выбранном проценте от депозита.",
+      },
+      { label: "Сделок", value: String(summary.tradeCount) },
+      { label: "Плюсовых", value: String(summary.winCount) },
+      { label: "Минусовых", value: String(summary.lossCount) },
+      { label: "Winrate", value: formatFixed(winRate, 2) + "%" },
+      { label: "Max loss streak", value: String(summary.maxLossStreak) },
+    ];
+  }
+
+  function renderChartMeta() {
+    if (!state.payload || !state.kellyPayload) {
+      dom.chartTitle.textContent = "График недоступен";
+      dom.chartSummary.innerHTML = '<span class="chart-summary-empty">Нет данных для расчета.</span>';
+      dom.chartEmptyState.hidden = false;
+      return;
+    }
+
+    dom.chartTitle.textContent = state.source.fileName;
+    dom.chartSummary.innerHTML = [
+      buildChartSummaryCard("mg", "MG", [
+        "reset " + state.config.resetAfterLosses,
+        "mult " + formatFixed(state.config.lossMult, 1) + "x",
+        "PnL " + formatMoney(state.payload.metrics.finalPnlNormalized),
+      ]),
+      buildChartSummaryCard("kelly", "Kelly", [
+        "депозит " + formatTrimmedNumber(state.kellyConfig.startDeposit, 2) + " USD",
+        "позиция " + formatFixed(state.kellyConfig.positionPct, 1) + "%",
+        "PnL " + formatMoney(state.kellyPayload.metrics.finalPnlNormalized),
+      ]),
+    ].join("");
+    dom.chartEmptyState.hidden = true;
+  }
+
+  function buildChartSummaryCard(className, label, items) {
+    return (
+      '<span class="chart-summary-card ' + className + '">' +
+      '<span class="chart-summary-label">' + escapeHtml(label) + "</span>" +
+      items.map(function (item) {
+        return '<span class="chart-summary-item">' + escapeHtml(item) + "</span>";
+      }).join("") +
+      "</span>"
+    );
+  }
+
+  function drawChart() {
+    const canvas = dom.chartCanvas;
+    const surface = dom.chartSurface;
+    const rect = surface.getBoundingClientRect();
+    const width = Math.max(320, Math.floor(rect.width));
+    const height = Math.max(320, Math.floor(rect.height));
+    const ratio = window.devicePixelRatio || 1;
+
+    if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+      canvas.width = Math.floor(width * ratio);
+      canvas.height = Math.floor(height * ratio);
+    }
+
+    const context = canvas.getContext("2d");
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    drawChartBackground(context, width, height);
+
+    if (!state.payload || !state.actualCurve || !state.kellyPayload) {
+      return;
+    }
+
+    const margins = {
+      top: 28,
+      right: 20,
+      bottom: 48,
+      left: 60,
+    };
+    const plotWidth = width - margins.left - margins.right;
+    const plotHeight = height - margins.top - margins.bottom;
+    if (plotWidth <= 0 || plotHeight <= 0) {
+      return;
+    }
+
+    const domain = calculateCombinedYDomain([
+      state.actualCurve.equityValues,
+      state.payload.equityValues,
+      state.baselinePayload ? state.baselinePayload.equityValues : [],
+      state.kellyPayload.equityValues,
+    ]);
+    const xMax = Math.max(
+      1,
+      state.actualCurve.tradeIndices[state.actualCurve.tradeIndices.length - 1] || 1,
+      state.payload.tradeIndices[state.payload.tradeIndices.length - 1] || 1,
+      state.kellyPayload.tradeIndices[state.kellyPayload.tradeIndices.length - 1] || 1
+    );
+
+    const xScale = function (value) {
+      return margins.left + (value / xMax) * plotWidth;
+    };
+    const yScale = function (value) {
+      return margins.top + ((domain.max - value) / (domain.max - domain.min)) * plotHeight;
+    };
+
+    drawGrid(context, width, height, margins, domain, xMax, xScale, yScale);
+    drawSeriesLine(
+      context,
+      state.actualCurve.tradeIndices,
+      state.actualCurve.equityValues,
+      xScale,
+      yScale,
+      {
+        color: "#c04b37",
+        width: 2.2,
+        dash: [],
+      }
+    );
+    drawSeriesLine(
+      context,
+      state.payload.tradeIndices,
+      state.payload.equityValues,
+      xScale,
+      yScale,
+      {
+        color: "#0f6f63",
+        width: 3.0,
+        dash: [],
+      }
+    );
+    drawSeriesLine(
+      context,
+      state.kellyPayload.tradeIndices,
+      state.kellyPayload.equityValues,
+      xScale,
+      yScale,
+      {
+        color: "#295fb7",
+        width: 2.6,
+        dash: [10, 6],
+      }
+    );
+    drawFinalPoint(context, state.actualCurve.tradeIndices, state.actualCurve.equityValues, xScale, yScale, "#c04b37");
+    drawFinalPoint(context, state.payload.tradeIndices, state.payload.equityValues, xScale, yScale, "#0f6f63");
+    drawFinalPoint(context, state.kellyPayload.tradeIndices, state.kellyPayload.equityValues, xScale, yScale, "#295fb7");
+    drawLegend(context, width, margins);
+  }
+
+  function drawLegend(context, width, margins) {
+    const items = [
+      { color: "#c04b37", dash: [], label: "Реальное equity" },
+      { color: "#0f6f63", dash: [], label: "Мартингейл" },
+      { color: "#295fb7", dash: [10, 6], label: "Kelly" },
+    ];
+    const startX = width - margins.right - 220;
+    const startY = margins.top + 16;
+
+    context.save();
+    context.font = "12px Bahnschrift, Segoe UI";
+    context.textBaseline = "middle";
+
+    for (let index = 0; index < items.length; index += 1) {
+      drawLegendItem(
+        context,
+        startX,
+        startY + index * 22,
+        items[index].color,
+        items[index].dash,
+        items[index].label
+      );
+    }
+
+    context.restore();
+  }
+
   function setBusy(value) {
     state.busy = Boolean(value);
     dom.autoBestButton.disabled = state.busy || !state.sequence.length;
     dom.fileInput.disabled = state.busy;
     dom.resetAfterLosses.disabled = state.busy;
     dom.lossMult.disabled = state.busy;
+    dom.kellyStartDeposit.disabled = state.busy;
+    dom.kellyPositionPct.disabled = state.busy;
     renderLossMultSequenceFields();
     renderManualBreakControls();
   }
@@ -1448,6 +1883,10 @@
 
   function formatMoney(value) {
     return formatFixed(value, 2) + " USD";
+  }
+
+  function formatTrimmedNumber(value, digits) {
+    return formatFixed(value, digits).replace(/(\.\d*?[1-9])0+$|\.0+$/, "$1");
   }
 
   function formatFixed(value, digits) {
@@ -1493,29 +1932,49 @@
     setVisitCounterState("—", "—", "Счетчик посетителей загружается...", false);
 
     try {
-      const response = await fetch(buildVisitCounterUrl(), {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-        },
-        mode: "cors",
-      });
-      const payload = await response.json();
-      if (!response.ok || !payload || payload.ok !== true) {
-        throw new Error(payload && payload.error ? payload.error : "Counter request failed");
-      }
-
+      const payload = await fetchVisitCounter();
       setVisitCounterState(
         formatCounterNumber(payload.overallUniqueVisitors),
         formatCounterNumber(payload.todayUniqueVisitors),
         "Уникальные посетители по cookie браузера.",
         false
       );
-    } catch (_error) {
+    } catch (error) {
+      if (typeof console !== "undefined" && typeof console.error === "function") {
+        console.error("Visit counter unavailable.", error);
+      }
       setVisitCounterState("—", "—", "Счетчик посетителей недоступен.", true);
     }
+  }
+
+  async function fetchVisitCounter() {
+    const urls = buildVisitCounterUrls();
+    let lastError = null;
+
+    for (let index = 0; index < urls.length; index += 1) {
+      try {
+        const response = await fetch(urls[index], {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload || payload.ok !== true) {
+          throw new Error(payload && payload.error ? payload.error : "Counter request failed");
+        }
+        return payload;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+    throw new Error("No visit counter URL available");
   }
 
   function setVisitCounterState(overall, today, note, isError) {
@@ -1533,9 +1992,46 @@
     return numeric.toLocaleString("ru-RU");
   }
 
-  function buildVisitCounterUrl() {
+  function buildVisitCounterUrls() {
+    const urls = [];
+    const proxyUrl = buildVisitCounterProxyUrl();
+    if (proxyUrl) {
+      urls.push(proxyUrl);
+    }
+
+    const legacyUrl = buildVisitCounterLegacyUrl();
+    if (legacyUrl && urls.indexOf(legacyUrl) === -1) {
+      urls.push(legacyUrl);
+    }
+
+    return urls;
+  }
+
+  function buildVisitCounterProxyUrl() {
+    if (!window.location || !/^https?:$/.test(window.location.protocol)) {
+      return null;
+    }
+
+    const pathname = window.location.pathname || "/";
+    const normalizedPath = pathLooksLikeFile(pathname)
+      ? pathname.slice(0, pathname.lastIndexOf("/") + 1)
+      : pathname.replace(/\/?$/, "/");
+
+    return window.location.origin + normalizedPath + "visit-counter";
+  }
+
+  function buildVisitCounterLegacyUrl() {
+    if (!window.location || window.location.protocol !== "http:") {
+      return null;
+    }
+
     const host = window.location.hostname || "localhost";
-    return window.location.protocol + "//" + host + ":8123/visit-counter";
+    return "http://" + host + ":8123/visit-counter";
+  }
+
+  function pathLooksLikeFile(pathname) {
+    const lastSegment = pathname.split("/").pop() || "";
+    return /\.[A-Za-z0-9]+$/.test(lastSegment);
   }
 
   function scheduleChartDraw() {
@@ -1605,6 +2101,17 @@
       const statsSummary = summarizeSequence([1, -1, 1, -1]);
       const statsPayload = buildPlotPayload([1, -1, 1, -1], config, statsSummary);
       assertAlmostEqual(statsPayload.metrics.finalPnlNormalized, 1.68, "stats pnl");
+      const kellySummary = summarizeSequence([1, -1, 1]);
+      const kellyPayload = buildKellyPayload([1, -1, 1], buildKellyConfig(100, 2.0), kellySummary);
+      assertArrayApproxEqual(kellyPayload.equityValues, [0.0, 1.84, -0.1968, 1.63957888], "kelly equity");
+      assertAlmostEqual(kellyPayload.metrics.finalBalance, 101.63957888, "kelly final balance");
+      assertAlmostEqual(kellyPayload.metrics.maxDrawdownNormalized, 2.0368, "kelly max dd");
+      assertAlmostEqual(kellyPayload.metrics.peakStakeNormalized, 2.0368, "kelly peak position");
+      const kellyMinStakePayload = buildKellyPayload([-1, -1, -1], buildKellyConfig(10, 2.0), summarizeSequence([-1, -1, -1]));
+      assertArrayApproxEqual(kellyMinStakePayload.equityValues, [0.0, -1.0, -2.0, -3.0], "kelly min stake equity");
+      assertAlmostEqual(kellyMinStakePayload.metrics.peakStakeNormalized, 1.0, "kelly min stake peak");
+      assertAlmostEqual(normalizeKellyStartDeposit("999,5"), 999.5, "normalize kelly deposit");
+      assertAlmostEqual(normalizeKellyPositionPct("10.9"), 10.0, "normalize kelly pct");
       const customConfig = buildConfig(4, 2.0);
       customConfig.lossMultSequence = [1.0, 1.5, 3.0, 10.0];
       const customPayload = buildPlotPayload([-1, -1, -1, 1], customConfig, summarizeSequence([-1, -1, -1, 1]));

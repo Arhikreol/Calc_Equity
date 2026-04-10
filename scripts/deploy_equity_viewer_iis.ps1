@@ -22,6 +22,88 @@ $visitCounterServiceScript = "C:\Calc_Equity\scripts\visit_counter_service.py"
 $visitCounterTaskName = "CalcEquityVisitCounter"
 $visitCounterFirewallRule = "Calc Equity Visit Counter 8123"
 $dataPath = Join-Path $DeployPath "data"
+$deployWebConfigPath = Join-Path $DeployPath "web.config"
+$rewriteModuleName = "RewriteModule"
+$visitCounterHealthUrl = "http://127.0.0.1:8123/visit-counter"
+$baseWebConfig = @"
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <defaultDocument enabled="true">
+      <files>
+        <clear />
+        <add value="index.html" />
+      </files>
+    </defaultDocument>
+    <staticContent>
+      <remove fileExtension=".json" />
+      <mimeMap fileExtension=".json" mimeType="application/json" />
+    </staticContent>
+    <httpProtocol>
+      <customHeaders>
+        <add name="X-Content-Type-Options" value="nosniff" />
+        <add name="Referrer-Policy" value="same-origin" />
+      </customHeaders>
+    </httpProtocol>
+  </system.webServer>
+</configuration>
+"@
+$proxyWebConfig = @"
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <defaultDocument enabled="true">
+      <files>
+        <clear />
+        <add value="index.html" />
+      </files>
+    </defaultDocument>
+    <staticContent>
+      <remove fileExtension=".json" />
+      <mimeMap fileExtension=".json" mimeType="application/json" />
+    </staticContent>
+    <rewrite>
+      <rules>
+        <rule name="VisitCounterProxy" stopProcessing="true">
+          <match url="^visit-counter/?$" />
+          <action type="Rewrite" url="http://127.0.0.1:8123/visit-counter" logRewrittenUrl="true" />
+        </rule>
+      </rules>
+    </rewrite>
+    <httpProtocol>
+      <customHeaders>
+        <add name="X-Content-Type-Options" value="nosniff" />
+        <add name="Referrer-Policy" value="same-origin" />
+      </customHeaders>
+    </httpProtocol>
+  </system.webServer>
+</configuration>
+"@
+
+function Wait-VisitCounterHealthy {
+    param(
+        [string]$Url,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 3 -Headers @{ Accept = "application/json" }
+            if ($response.StatusCode -eq 200) {
+                $payload = $response.Content | ConvertFrom-Json
+                if ($payload -and $payload.ok -eq $true) {
+                    return $payload
+                }
+            }
+        } catch {
+        }
+
+        Start-Sleep -Milliseconds 700
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
+}
 
 $existingTaskBeforeCopy = Get-ScheduledTask -TaskName $visitCounterTaskName -ErrorAction SilentlyContinue
 if ($existingTaskBeforeCopy) {
@@ -39,6 +121,22 @@ Copy-Item -Path (Join-Path $pythonSourceRoot "*") -Destination $pythonRuntimeRoo
 New-Item -ItemType Directory -Force -Path $DeployPath | Out-Null
 Copy-Item -Path (Join-Path $SourcePath "*") -Destination $DeployPath -Recurse -Force
 New-Item -ItemType Directory -Force -Path $dataPath | Out-Null
+
+$deployWebConfigContent = $baseWebConfig
+$rewriteModule = Get-WebGlobalModule -Name $rewriteModuleName -ErrorAction SilentlyContinue
+$proxySection = Get-WebConfiguration -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.webServer/proxy" -ErrorAction SilentlyContinue
+if ($rewriteModule -and $proxySection) {
+    Set-WebConfigurationProperty -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.webServer/proxy" -Name "enabled" -Value "True"
+    Set-WebConfigurationProperty -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.webServer/proxy" -Name "preserveHostHeader" -Value "True"
+    Set-WebConfigurationProperty -PSPath "MACHINE/WEBROOT/APPHOST" -Filter "system.webServer/proxy" -Name "reverseRewriteHostInResponseHeaders" -Value "False"
+    $deployWebConfigContent = $proxyWebConfig
+    Write-Host "Configured IIS reverse proxy for /$ApplicationName/visit-counter"
+} elseif ($rewriteModule) {
+    Write-Warning "IIS URL Rewrite is installed, but ARR proxy is unavailable. Install Application Request Routing to proxy /visit-counter through IIS."
+} else {
+    Write-Warning "IIS URL Rewrite module is unavailable. The visit counter will keep using direct port 8123 fallback."
+}
+Set-Content -LiteralPath $deployWebConfigPath -Value $deployWebConfigContent -Encoding UTF8
 
 $existingApp = Get-WebApplication -Site $SiteName -Name $ApplicationName -ErrorAction SilentlyContinue
 if (-not $existingApp) {
@@ -72,7 +170,10 @@ $taskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -MultipleInstances IgnoreNew
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1)
 
 Register-ScheduledTask `
     -TaskName $visitCounterTaskName `
@@ -83,5 +184,15 @@ Register-ScheduledTask `
     | Out-Null
 
 Start-ScheduledTask -TaskName $visitCounterTaskName
+
+$visitCounterPayload = Wait-VisitCounterHealthy -Url $visitCounterHealthUrl -TimeoutSeconds 20
+if (-not $visitCounterPayload) {
+    $taskState = (Get-ScheduledTask -TaskName $visitCounterTaskName -ErrorAction SilentlyContinue).State
+    throw "Visit counter service did not become healthy on $visitCounterHealthUrl. Task state: $taskState"
+}
+
+Write-Host ("Visit counter is healthy. Overall unique visitors: {0}, today: {1}" -f `
+    $visitCounterPayload.overallUniqueVisitors, `
+    $visitCounterPayload.todayUniqueVisitors)
 
 Write-Host "Deployed to http://localhost/$ApplicationName/"
